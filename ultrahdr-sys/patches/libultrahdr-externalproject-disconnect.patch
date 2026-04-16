@@ -1,0 +1,40 @@
+Make the turbojpeg ExternalProject_Add safe to re-run.
+
+CMake's ExternalProject_Add re-runs a `git fetch` + `git rev-parse HEAD`
+update step on every build. If the .git directory inside the cached
+checkout is stripped (e.g. by CI cache layers that ignore nested git
+repos), the update step fails with:
+
+  Failed to get the hash for HEAD:
+  fatal: not a git repository: '.git'
+
+...which breaks every incremental rebuild. Adding UPDATE_DISCONNECTED
+TRUE makes cmake skip the update step after the initial clone, and
+GIT_SHALLOW TRUE avoids fetching the full libjpeg-turbo history when
+we only want a pinned tag.
+
+This only applies when UHDR_BUILD_DEPS=ON (the `vendored` feature). With
+system libjpeg found, ExternalProject_Add is never called in the first
+place.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -480,6 +480,8 @@ if(NOT JPEG_FOUND)
+     ExternalProject_Add(${JPEGTURBO_TARGET_NAME}
+         GIT_REPOSITORY https://github.com/libjpeg-turbo/libjpeg-turbo.git
+         GIT_TAG 3.1.0
++        GIT_SHALLOW TRUE
++        UPDATE_DISCONNECTED TRUE
+         PREFIX ${JPEGTURBO_PREFIX_DIR}
+         SOURCE_DIR ${JPEGTURBO_SOURCE_DIR}
+         BINARY_DIR ${JPEGTURBO_BINARY_DIR}
+@@ -497,6 +499,8 @@ if(NOT JPEG_FOUND)
+     ExternalProject_Add(${JPEGTURBO_TARGET_NAME}
+         GIT_REPOSITORY https://github.com/libjpeg-turbo/libjpeg-turbo.git
+         GIT_TAG 3.1.0
++        GIT_SHALLOW TRUE
++        UPDATE_DISCONNECTED TRUE
+         PREFIX ${JPEGTURBO_PREFIX_DIR}
+         SOURCE_DIR ${JPEGTURBO_SOURCE_DIR}
+         BINARY_DIR ${JPEGTURBO_BINARY_DIR}

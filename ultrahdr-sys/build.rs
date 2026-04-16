@@ -146,6 +146,10 @@ fn apply_local_patches(manifest_dir: &Path, src_dir: &Path) {
         src_dir,
         &manifest_dir.join("patches/libultrahdr-no-threads.patch"),
     );
+    apply_patch_once(
+        src_dir,
+        &manifest_dir.join("patches/libultrahdr-externalproject-disconnect.patch"),
+    );
 }
 
 fn prepare_src_dir(manifest_dir: &Path, src_dir: &Path, out_dir: &Path) -> PathBuf {
@@ -190,6 +194,8 @@ fn main() {
     }
 
     let patch_path = manifest_dir.join("patches/libultrahdr-no-threads.patch");
+    let update_patch_path =
+        manifest_dir.join("patches/libultrahdr-externalproject-disconnect.patch");
     println!("cargo:rerun-if-env-changed=ULTRAHDR_SRC_DIR");
     println!("cargo:rerun-if-env-changed=ULTRAHDR_SKIP_PATCHES");
     println!("cargo:rerun-if-env-changed=WASI_SDK_PREFIX");
@@ -204,6 +210,7 @@ fn main() {
         source_dir.join("CMakeLists.txt").display()
     );
     println!("cargo:rerun-if-changed={}", patch_path.display());
+    println!("cargo:rerun-if-changed={}", update_patch_path.display());
 
     let src_dir = prepare_src_dir(&manifest_dir, &source_dir, &out_dir);
 
