@@ -468,15 +468,29 @@ pub(crate) fn copy_raw_packed(img: &sys::uhdr_raw_image) -> Result<Vec<u8>> {
         .checked_mul(bytes_per_pixel)
         .ok_or_else(|| Error::invalid_param("row overflow"))?;
 
-    let mut out = vec![0u8; row_bytes * height];
+    let total_bytes = row_bytes
+        .checked_mul(height)
+        .ok_or_else(|| Error::invalid_param("output size overflow"))?;
+    let mut out = vec![0u8; total_bytes];
     let mut src = data_ptr as *const u8;
     let mut dst = 0;
-    for _ in 0..height {
-        // SAFETY: bounds are validated above; src points into buffer provided by decoder.
-        let row = unsafe { std::slice::from_raw_parts(src, stride_bytes) };
-        out[dst..dst + row_bytes].copy_from_slice(&row[..row_bytes]);
+    for row_idx in 0..height {
+        // SAFETY: We materialize a slice covering only the live `row_bytes` (the logical
+        // pixel width), never the stride padding beyond it which may not be initialized
+        // or even part of the allocation on the final row. `src` points to the start of
+        // the current row within the decoder-provided buffer.
+        let row = unsafe { std::slice::from_raw_parts(src, row_bytes) };
+        out[dst..dst + row_bytes].copy_from_slice(row);
         dst += row_bytes;
-        src = unsafe { src.add(stride_bytes) };
+        // Advance to the next row only when there is one. Performing
+        // `src.add(stride_bytes)` after the last row would create a pointer past the
+        // end of the plane's allocation (stride > width is the common decoder layout),
+        // which is undefined behavior.
+        if row_idx + 1 < height {
+            // SAFETY: there is at least one more row in the plane, so advancing by
+            // `stride_bytes` lands within the same allocation.
+            src = unsafe { src.add(stride_bytes) };
+        }
     }
     Ok(out)
 }
@@ -643,6 +657,58 @@ mod tests {
         assert_eq!(owned.data.len(), width as usize * height as usize * bpp);
         assert_eq!(&owned.data[..8], &[1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(&owned.data[8..], &[9, 10, 11, 12, 13, 14, 15, 16]);
+    }
+
+    #[test]
+    fn copy_raw_packed_handles_strided_buffer_without_past_end_read() {
+        // Allocation is sized to exactly fit the live pixels of all rows plus
+        // the stride padding *between* rows -- but no padding after the final
+        // row. Reading past the end (`src.add(stride_bytes)` on the last
+        // iteration) or materializing a `stride_bytes` slice on the final row
+        // would walk off the allocation. Miri / sanitizers flag both.
+        let width = 3u32;
+        let height = 4u32;
+        let bpp = 4usize;
+        let stride_px = 5usize; // stride > width (one trailing padding pixel per row)
+        let row_bytes = width as usize * bpp;
+        let stride_bytes = stride_px * bpp;
+        // Tightly-sized allocation: (height-1) full strides + final row's live bytes.
+        let total = stride_bytes * (height as usize - 1) + row_bytes;
+        let mut buf = vec![0u8; total];
+        // Fill each row's live region with a recognizable pattern.
+        for r in 0..height as usize {
+            let base = r * stride_bytes;
+            for c in 0..row_bytes {
+                buf[base + c] = (r as u8) * 16 + c as u8;
+            }
+        }
+
+        let planes = [
+            buf.as_mut_ptr() as *mut c_void,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ];
+        let raw = sys::uhdr_raw_image {
+            fmt: sys::uhdr_img_fmt::UHDR_IMG_FMT_32bppRGBA8888,
+            cg: sys::uhdr_color_gamut::UHDR_CG_DISPLAY_P3,
+            ct: sys::uhdr_color_transfer::UHDR_CT_SRGB,
+            range: sys::uhdr_color_range::UHDR_CR_FULL_RANGE,
+            w: width,
+            h: height,
+            planes,
+            stride: [stride_px as u32, 0, 0],
+        };
+        let owned = copy_raw_packed(&raw).unwrap();
+        assert_eq!(owned.len(), row_bytes * height as usize);
+        for r in 0..height as usize {
+            for c in 0..row_bytes {
+                assert_eq!(
+                    owned[r * row_bytes + c],
+                    (r as u8) * 16 + c as u8,
+                    "mismatch at row {r} col {c}"
+                );
+            }
+        }
     }
 
     #[test]
